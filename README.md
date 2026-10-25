@@ -3,11 +3,18 @@
 Small Android app: pick a local music file, choose a duration, press Play —
 playback stops automatically when the timer runs out.
 
+<p align="center">
+  <img src="docs/screenshots/setup.png" alt="Setup screen: chosen file, duration slider, loop switch, Play button and recent list" width="270">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/playing.png" alt="Playback screen: countdown and Stop button" width="270">
+</p>
+
 - Kotlin + Jetpack Compose (Material 3), minSdk 26, targetSdk 35
 - Playback runs in a foreground service (`PlaybackService`) so it keeps going
   with the screen off; the notification shows a live countdown and a Stop action.
 - Optional looping so a short track keeps playing until the timer ends.
-- The last file, duration and loop setting are remembered.
+- A **Recent** list keeps the last 5 file + duration + loop combinations;
+  tap one to start it again instantly, or ✕ to remove it.
 
 ## Build
 

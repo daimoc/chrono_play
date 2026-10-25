@@ -8,6 +8,10 @@
     <string name="stop">Stop</string>
     <string name="channel_name">Playback</string>
     <string name="notification_title">Playing — stops in</string>
+    <string name="recent">Recent</string>
+    <string name="minutes">%1$d min</string>
+    <string name="looped">loop</string>
+    <string name="remove_recent">Remove from recent</string>
     <string name="error_audio_focus">Another app is using audio</string>
     <string name="error_playback">Could not play this file</string>
 </resources>

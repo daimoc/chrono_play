@@ -12,13 +12,22 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -36,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.edit
@@ -65,12 +75,24 @@ class MainActivity : ComponentActivity() {
 fun ChronoPlayScreen() {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+    val historyStore = remember { History(prefs) }
     val playback by PlaybackService.state.collectAsStateWithLifecycle()
 
     var uri by remember { mutableStateOf(prefs.getString(KEY_URI, null)?.let(Uri::parse)) }
     var minutes by remember { mutableFloatStateOf(prefs.getInt(KEY_MINUTES, 30).toFloat()) }
     var loop by remember { mutableStateOf(prefs.getBoolean(KEY_LOOP, true)) }
+    var history by remember { mutableStateOf(historyStore.load()) }
     val fileName = remember(uri) { uri?.let { displayName(context, it) } }
+
+    // Persisted read grants are limited per app, so give back those nothing refers to anymore.
+    fun releaseIfUnused(candidate: Uri?) {
+        if (candidate == null || candidate == uri || history.any { it.uri == candidate }) return
+        runCatching {
+            context.contentResolver.releasePersistableUriPermission(
+                candidate, Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+    }
 
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { picked ->
         if (picked != null) {
@@ -78,29 +100,53 @@ fun ChronoPlayScreen() {
             context.contentResolver.takePersistableUriPermission(
                 picked, Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
+            val previous = uri
             uri = picked
             prefs.edit { putString(KEY_URI, picked.toString()) }
+            releaseIfUnused(previous)
         }
     }
 
-    val startPlayback = {
-        uri?.let {
-            val wholeMinutes = minutes.roundToInt()
-            prefs.edit { putInt(KEY_MINUTES, wholeMinutes); putBoolean(KEY_LOOP, loop) }
-            PlaybackService.start(context, it, wholeMinutes * 60_000L, loop)
+    fun startPlayback(entry: HistoryEntry) {
+        val previous = uri
+        uri = entry.uri
+        minutes = entry.minutes.toFloat()
+        loop = entry.loop
+        prefs.edit {
+            putString(KEY_URI, entry.uri.toString())
+            putInt(KEY_MINUTES, entry.minutes)
+            putBoolean(KEY_LOOP, entry.loop)
         }
+        val dropped = history
+        history = historyStore.add(entry)
+        (dropped.map { it.uri } + previous).distinct().forEach(::releaseIfUnused)
+        PlaybackService.start(context, entry.uri, entry.minutes * 60_000L, entry.loop)
     }
+
+    var pending by remember { mutableStateOf<HistoryEntry?>(null) }
     // The notification only shows the countdown; playback works even if it is denied.
     val requestNotifications =
-        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { startPlayback() }
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+            pending?.let(::startPlayback)
+            pending = null
+        }
+    val play: (HistoryEntry) -> Unit = { entry ->
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pending = entry
+            requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            startPlayback(entry)
+        }
+    }
 
     Scaffold { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .verticalScroll(rememberScrollState())
                 .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically),
+            verticalArrangement = Arrangement.spacedBy(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             OutlinedButton(onClick = { pickFile.launch(arrayOf("audio/*")) }, enabled = !playback.isPlaying) {
@@ -133,10 +179,9 @@ fun ChronoPlayScreen() {
                 Button(
                     enabled = uri != null,
                     onClick = {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        } else {
-                            startPlayback()
+                        uri?.let {
+                            val name = fileName ?: it.lastPathSegment ?: it.toString()
+                            play(HistoryEntry(it, name, minutes.roundToInt(), loop))
                         }
                     },
                 ) {
@@ -145,7 +190,46 @@ fun ChronoPlayScreen() {
                 playback.error?.let {
                     Text(it, color = MaterialTheme.colorScheme.error)
                 }
+                if (history.isNotEmpty()) {
+                    RecentList(
+                        entries = history,
+                        onPlay = play,
+                        onRemove = { entry ->
+                            history = historyStore.remove(entry)
+                            releaseIfUnused(entry.uri)
+                        },
+                    )
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun RecentList(
+    entries: List<HistoryEntry>,
+    onPlay: (HistoryEntry) -> Unit,
+    onRemove: (HistoryEntry) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(
+            stringResource(R.string.recent),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        entries.forEach { entry ->
+            val details = stringResource(R.string.minutes, entry.minutes) +
+                if (entry.loop) " · " + stringResource(R.string.looped) else ""
+            ListItem(
+                modifier = Modifier.clickable { onPlay(entry) },
+                leadingContent = { Icon(Icons.Filled.PlayArrow, contentDescription = null) },
+                headlineContent = { Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                supportingContent = { Text(details) },
+                trailingContent = {
+                    IconButton(onClick = { onRemove(entry) }) {
+                        Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.remove_recent))
+                    }
+                },
+            )
         }
     }
 }
