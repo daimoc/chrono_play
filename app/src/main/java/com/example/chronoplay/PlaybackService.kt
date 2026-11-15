@@ -43,21 +43,38 @@ class PlaybackService : Service() {
         private const val ACTION_STOP = "com.example.chronoplay.action.STOP"
         private const val EXTRA_DURATION_MS = "duration_ms"
         private const val EXTRA_LOOP = "loop"
+        private const val EXTRA_START_AT_MS = "start_at_ms"
+        private const val EXTRA_SAVE_POSITION = "save_position"
         private const val CHANNEL_ID = "playback"
         private const val NOTIFICATION_ID = 1
         private const val TICK_MS = 100L
         private const val FADE_OUT_MS = 5_000L
         private const val DUCK_VOLUME = 0.2f
+        /** A saved position this close to the end restarts the file instead. */
+        private const val RESUME_END_MARGIN_MS = 1_000
 
         private val _state = MutableStateFlow(PlaybackState())
         val state: StateFlow<PlaybackState> = _state.asStateFlow()
 
-        fun start(context: Context, uri: Uri, durationMs: Long, loop: Boolean) {
+        /**
+         * Plays [uri] for [durationMs], starting at [startAtMs]. With [savePosition], where it
+         * stops is stored in [ResumePositions] for the next play.
+         */
+        fun start(
+            context: Context,
+            uri: Uri,
+            durationMs: Long,
+            loop: Boolean,
+            startAtMs: Long = 0L,
+            savePosition: Boolean = false,
+        ) {
             val intent = Intent(context, PlaybackService::class.java)
                 .setAction(ACTION_START)
                 .setData(uri)
                 .putExtra(EXTRA_DURATION_MS, durationMs)
                 .putExtra(EXTRA_LOOP, loop)
+                .putExtra(EXTRA_START_AT_MS, startAtMs)
+                .putExtra(EXTRA_SAVE_POSITION, savePosition)
             ContextCompat.startForegroundService(context, intent)
         }
 
@@ -71,6 +88,11 @@ class PlaybackService : Service() {
     private var endAtElapsed = 0L
     private var duckVolume = 1f
     private var pausedByFocusLoss = false
+    private var currentUri: Uri? = null
+    private var savePosition = false
+    private var prepared = false
+
+    private val positions by lazy { ResumePositions(getSharedPreferences(PREFS, MODE_PRIVATE)) }
 
     private val audioManager by lazy { getSystemService(AudioManager::class.java) }
     private val audioAttributes = AudioAttributes.Builder()
@@ -126,7 +148,13 @@ class PlaybackService : Service() {
                 if (uri == null || durationMs <= 0) {
                     stopPlayback()
                 } else {
-                    startPlayback(uri, durationMs, intent.getBooleanExtra(EXTRA_LOOP, true))
+                    startPlayback(
+                        uri,
+                        durationMs,
+                        intent.getBooleanExtra(EXTRA_LOOP, true),
+                        intent.getLongExtra(EXTRA_START_AT_MS, 0L),
+                        intent.getBooleanExtra(EXTRA_SAVE_POSITION, false),
+                    )
                 }
             }
             ACTION_STOP -> stopPlayback()
@@ -134,10 +162,13 @@ class PlaybackService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startPlayback(uri: Uri, durationMs: Long, loop: Boolean) {
+    private fun startPlayback(uri: Uri, durationMs: Long, loop: Boolean, startAtMs: Long, save: Boolean) {
+        rememberPosition()
         releasePlayer()
         val mp = MediaPlayer()
         player = mp
+        currentUri = uri
+        savePosition = save
         try {
             mp.setAudioAttributes(audioAttributes)
             mp.setWakeMode(this, PowerManager.PARTIAL_WAKE_LOCK)
@@ -150,13 +181,17 @@ class PlaybackService : Service() {
                 }
                 duckVolume = 1f
                 pausedByFocusLoss = false
+                prepared = true
+                if (startAtMs > 0 && startAtMs < it.duration - RESUME_END_MARGIN_MS) {
+                    it.seekTo(startAtMs.toInt())
+                }
                 it.start()
                 endAtElapsed = SystemClock.elapsedRealtime() + durationMs
                 _state.value = PlaybackState(isPlaying = true, remainingMs = durationMs)
                 updateNotification(durationMs)
                 handler.post(tick)
             }
-            mp.setOnCompletionListener { if (!it.isLooping) stopPlayback() }
+            mp.setOnCompletionListener { if (!it.isLooping) stopPlayback(finished = true) }
             mp.setOnErrorListener { _, _, _ ->
                 stopPlayback(getString(R.string.error_playback))
                 true
@@ -195,8 +230,10 @@ class PlaybackService : Service() {
         applyVolume(endAtElapsed - SystemClock.elapsedRealtime())
     }
 
-    private fun stopPlayback(error: String? = null) {
+    /** [finished] means the file played to its end, so the next play starts over. */
+    private fun stopPlayback(error: String? = null, finished: Boolean = false) {
         handler.removeCallbacks(tick)
+        if (error == null) rememberPosition(finished)
         releasePlayer()
         audioManager.abandonAudioFocusRequest(focusRequest)
         _state.value = PlaybackState(error = error)
@@ -204,13 +241,23 @@ class PlaybackService : Service() {
         stopSelf()
     }
 
+    /** Saves where the current file stopped, if asked to and it actually started playing. */
+    private fun rememberPosition(finished: Boolean = false) {
+        val uri = currentUri ?: return
+        if (!savePosition || !prepared) return
+        val position = if (finished) 0L else runCatching { player?.currentPosition?.toLong() }.getOrNull()
+        position?.let { positions.set(uri, it) }
+    }
+
     private fun releasePlayer() {
         player?.release()
         player = null
+        prepared = false
     }
 
     override fun onDestroy() {
         handler.removeCallbacks(tick)
+        rememberPosition()
         releasePlayer()
         audioManager.abandonAudioFocusRequest(focusRequest)
         if (_state.value.isPlaying) _state.value = PlaybackState()

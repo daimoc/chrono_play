@@ -1,20 +1,40 @@
-# ChronoPlay
+<p align="center">
+  <img src="docs/icon.svg" alt="ChronoPlay icon: a stopwatch with a play symbol" width="96">
+</p>
+
+<h1 align="center">ChronoPlay</h1>
 
 Small Android app: pick a local music file, choose a duration, press Play —
 playback stops automatically when the timer runs out.
 
 <p align="center">
-  <img src="docs/screenshots/setup.png" alt="Setup screen: chosen file, duration slider, loop switch, Play button and recent list" width="270">
-  &nbsp;&nbsp;
-  <img src="docs/screenshots/playing.png" alt="Playback screen: countdown and Stop button" width="270">
+  <img src="docs/screenshots/setup.png" alt="Setup screen: app icon and file button, chosen file, hours and minutes wheels, loop and resume switches, resume position, Play button and recent list" width="240">
+  &nbsp;
+  <img src="docs/screenshots/playing.png" alt="Playback screen: countdown and Stop button" width="240">
+  &nbsp;
+  <img src="docs/screenshots/dark.png" alt="Dark theme: recent list and the System / Light / Dark theme selector" width="240">
 </p>
 
-- Kotlin + Jetpack Compose (Material 3), minSdk 26, targetSdk 35
-- Playback runs in a foreground service (`PlaybackService`) so it keeps going
-  with the screen off; the notification shows a live countdown and a Stop action.
-- Optional looping so a short track keeps playing until the timer ends.
-- A **Recent** list keeps the last 5 file + duration + loop combinations;
-  tap one to start it again instantly, or ✕ to remove it.
+## Features
+
+- **Precise duration**: hours and minutes scroll wheels, from 1 min up to
+  23 h 59.
+- **Fade-out**: the volume fades down over the last 5 seconds instead of
+  cutting off.
+- **Loop** (optional): a short track keeps playing until the timer ends.
+- **Resume** (optional): each file remembers where it stopped (timer end,
+  Stop button, or another app taking the audio) and the next play continues
+  from there. *Start from beginning* clears it; a file that played to its end
+  starts over.
+- **Recent**: the last 5 file + duration + loop combinations; tap one to start
+  it again instantly, or ✕ to remove it.
+- **Theme**: System, Light or Dark, chosen at the bottom of the screen.
+- **Keeps playing with the screen off**: playback runs in a foreground service
+  (`PlaybackService`); the notification shows a live countdown and a Stop action.
+- Pauses during phone calls and lowers the volume for other apps' short
+  sounds, while the timer keeps running.
+
+Kotlin + Jetpack Compose (Material 3), minSdk 26, targetSdk 35.
 
 ## Build
 
@@ -23,8 +43,11 @@ Open the folder in Android Studio, or from a terminal with the Android SDK insta
     ./gradlew assembleDebug
     ./gradlew installDebug
 
-Gradle 8.13 needs JDK 17 or 21 (Android Studio ships one). If your default
-`java` is newer, point `JAVA_HOME` at a supported JDK before running `./gradlew`.
+Gradle 8.13 needs JDK 17 or 21 (Android Studio ships one). `gradle.properties`
+points Gradle at `/usr/lib/jvm/java-21-openjdk-amd64` (`org.gradle.java.home`),
+because a newer default `java` such as 25 makes the build fail with only its
+version number as the error. On a machine where JDK 21 lives elsewhere, change
+that line or remove it and set `JAVA_HOME`.
 
 ## Deploy on a real device
 
