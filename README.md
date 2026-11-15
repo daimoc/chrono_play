@@ -107,3 +107,7 @@ opened it from when Android asks.
   already installed; remove it with `adb uninstall com.example.chronoplay`.
 - **No countdown notification**: allow notifications for ChronoPlay in the
   app's system settings. Playback works either way.
+
+## License
+
+[MIT](LICENSE)
